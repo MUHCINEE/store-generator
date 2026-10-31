@@ -1,60 +1,64 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
-import AdminDashboard from './pages/AdminDashboard.jsx';
 import ProtectdRoute from './components/ProtectdRoute.jsx';
-import Login from './pages/Login.jsx';
-import StoreFront from './pages/StoreFront.jsx';
-import { apiRequest } from './utils/storage.js';
+import { ensureFirebaseConfigured, getFirebaseAuth } from './firebase.js';
+
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard.jsx'));
+const Login = lazy(() => import('./pages/Login.jsx'));
+const StoreFront = lazy(() => import('./pages/StoreFront.jsx'));
 
 export default function App() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [checkingSession, setCheckingSession] = useState(true);
+  const [user, setUser] = useState(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authError, setAuthError] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
-    let active = true;
-    const handleExpiredSession = () => setAuthenticated(false);
-    window.addEventListener('atelier:session-expired', handleExpiredSession);
-    apiRequest('/api/auth/session')
-      .then(({ authenticated: isAuthenticated }) => {
-        if (active) setAuthenticated(isAuthenticated);
-      })
-      .catch(() => {
-        if (active) setAuthenticated(false);
-      })
-      .finally(() => {
-        if (active) setCheckingSession(false);
+    try {
+      ensureFirebaseConfigured();
+      return onAuthStateChanged(getFirebaseAuth(), (currentUser) => {
+        setUser(currentUser);
+        setCheckingAuth(false);
+        setAuthError('');
+      }, (error) => {
+        setAuthError(error.message);
+        setCheckingAuth(false);
       });
-    return () => {
-      active = false;
-      window.removeEventListener('atelier:session-expired', handleExpiredSession);
-    };
+    } catch (error) {
+      setAuthError(error.message);
+      setCheckingAuth(false);
+      return undefined;
+    }
   }, []);
 
-  async function signOut() {
+  async function handleSignOut() {
     try {
-      await apiRequest('/api/auth/logout', { method: 'POST' });
-      setAuthenticated(false);
-      navigate('/login');
+      await signOut(getFirebaseAuth());
+      navigate('/login', { replace: true });
     } catch (error) {
-      window.alert(error.message);
+      setAuthError(error.message);
     }
   }
 
+  const loading = <div className="page-loading"><span className="spinner" />Checking your session…</div>;
+
   return (
-    <Routes>
-      <Route path="/" element={<StoreFront />} />
-      <Route path="/storefront" element={<StoreFront />} />
-      <Route path="/store/:slug" element={<StoreFront />} />
-      <Route path="/login" element={checkingSession
-        ? <div className="page-loading"><span className="spinner" />Checking your session…</div>
-        : authenticated ? <Navigate to="/admin" replace /> : <Login onLogin={() => setAuthenticated(true)} />
-      } />
-      <Route path="/admin" element={checkingSession
-        ? <div className="page-loading"><span className="spinner" />Checking your session…</div>
-        : <ProtectdRoute authenticated={authenticated}><AdminDashboard onSignOut={signOut} /></ProtectdRoute>
-      } />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={loading}>
+      <Routes>
+        <Route path="/" element={<StoreFront />} />
+        <Route path="/storefront" element={<StoreFront />} />
+        <Route path="/store/:slug" element={<StoreFront />} />
+        <Route path="/login" element={checkingAuth
+          ? loading
+          : user ? <Navigate to="/admin" replace /> : <Login onLogin={setUser} authError={authError} />
+        } />
+        <Route path="/admin" element={checkingAuth
+          ? loading
+          : <ProtectdRoute authenticated={Boolean(user)}><AdminDashboard onSignOut={handleSignOut} authError={authError} /></ProtectdRoute>
+        } />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }

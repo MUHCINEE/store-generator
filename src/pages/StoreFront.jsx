@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowRight, Check, ChevronDown, Leaf, Minus, Plus, ShoppingBag, Sparkles, X } from 'lucide-react';
+import { ArrowDown, ArrowRight, Check, ChevronDown, Leaf, LoaderCircle, Minus, Plus, ShoppingBag, Sparkles, X } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import Navbar from '../components/Navbar.jsx';
-import { apiRequest, formatPrice } from '../utils/storage.js';
+import { createOrder, formatPrice, subscribeToProducts } from '../utils/storage.js';
 
-const defaultStore = { name: 'Maison Verde', slug: 'maison-verde', whatsappNumber: '' };
+const defaultStore = {
+  name: import.meta.env.VITE_STORE_NAME || 'Maison Verde',
+  slug: import.meta.env.VITE_STORE_SLUG || 'maison-verde'
+};
 
 function ProductTile({ product, addToCart }) {
   const soldOut = !product.stock;
@@ -27,35 +30,35 @@ function ProductTile({ product, addToCart }) {
 }
 
 function CartDrawer({ cart, onClose, onChange, store }) {
-  const [customer, setCustomer] = useState({ name: '', phone: '', note: '' });
+  const [customer, setCustomer] = useState({ name: '', phone: '', location: '' });
   const [error, setError] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const items = Object.values(cart);
   const total = items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
 
-  function checkout(event) {
+  async function checkout(event) {
     event.preventDefault();
     setError('');
     if (!items.length) return setError('Your bag is looking a little empty.');
-    if (!store.whatsappNumber) return setError('WhatsApp ordering is not set up yet. Please contact the shop directly.');
-    if (!customer.name.trim() || !customer.phone.trim()) {
-      return setError('Add your name and phone number to continue.');
+    if (!customer.name.trim() || !customer.phone.trim() || !customer.location.trim()) {
+      return setError('Add your name, phone number, and delivery location to continue.');
     }
-    const lines = items.map(({ product, quantity }) => `• ${product.name} × ${quantity} — ${formatPrice(product.price * quantity)}`);
-    const message = [
-      `Hello ${store.name}! I'd like to place an order:`,
-      '',
-      ...lines,
-      '',
-      `Total: ${formatPrice(total)}`,
-      `Name: ${customer.name.trim()}`,
-      `Phone: ${customer.phone.trim()}`,
-      customer.note.trim() ? `Note: ${customer.note.trim()}` : ''
-    ].filter(Boolean).join('\n');
-    const url = `https://wa.me/${store.whatsappNumber}?text=${encodeURIComponent(message)}`;
-    const orderWindow = window.open(url, '_blank', 'noopener,noreferrer');
-    if (!orderWindow) return setError('Allow pop-ups to continue to WhatsApp, then try again.');
-    setSubmitted(true);
+    setSubmitting(true);
+    try {
+      await createOrder({
+        customerName: customer.name,
+        phoneNumber: customer.phone,
+        location: customer.location,
+        items,
+        storeSlug: store.slug
+      });
+      setSubmitted(true);
+    } catch (orderError) {
+      setError(orderError.message);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -75,11 +78,11 @@ function CartDrawer({ cart, onClose, onChange, store }) {
                   <article className="cart-item" key={product.id}>
                     {product.image ? <img src={product.image} alt="" /> : <div className="cart-item-placeholder"><Sparkles size={18} /></div>}
                     <div className="cart-item-main">
-                      <div className="cart-item-heading"><div><h3>{product.name}</h3><span>{formatPrice(product.price)}</span></div><button className="remove-button" aria-label={`Remove ${product.name}`} onClick={() => onChange(product, 0)}><X size={15} /></button></div>
+                      <div className="cart-item-heading"><div><h3>{product.name}</h3><span>{formatPrice(product.price)}</span></div>                      <button className="remove-button" aria-label={`Remove ${product.name}`} onClick={() => onChange(product, 0)} disabled={submitted}><X size={15} /></button></div>
                       <div className="quantity-control">
-                        <button aria-label={`Decrease ${product.name} quantity`} onClick={() => onChange(product, quantity - 1)}><Minus size={13} /></button>
+                      <button aria-label={`Decrease ${product.name} quantity`} onClick={() => onChange(product, quantity - 1)} disabled={submitted}><Minus size={13} /></button>
                         <span>{quantity}</span>
-                        <button aria-label={`Increase ${product.name} quantity`} onClick={() => onChange(product, quantity + 1)} disabled={quantity >= product.stock}><Plus size={13} /></button>
+                      <button aria-label={`Increase ${product.name} quantity`} onClick={() => onChange(product, quantity + 1)} disabled={submitted || quantity >= product.stock}><Plus size={13} /></button>
                       </div>
                     </div>
                   </article>
@@ -89,17 +92,17 @@ function CartDrawer({ cart, onClose, onChange, store }) {
                 <div className="subtotal-row"><span>Subtotal</span><strong>{formatPrice(total)}</strong></div>
                 <p className="checkout-note">Shipping and delivery are arranged directly with the shop.</p>
                 {submitted ? (
-                  <div className="submitted-note"><Check size={17} /> Your order is ready in WhatsApp. Send the message to confirm.</div>
+                  <div className="submitted-note"><Check size={17} /> Your order has been sent to the shop. Thank you!</div>
                 ) : (
                   <form className="checkout-form" onSubmit={checkout}>
                     <label htmlFor="customer-name">Your name</label>
                     <input id="customer-name" autoComplete="name" required maxLength={100} value={customer.name} onChange={(event) => setCustomer({ ...customer, name: event.target.value })} />
                     <label htmlFor="customer-phone">Phone number</label>
                     <input id="customer-phone" type="tel" autoComplete="tel" required maxLength={40} value={customer.phone} onChange={(event) => setCustomer({ ...customer, phone: event.target.value })} />
-                    <label htmlFor="customer-note">A note for the shop <span>(optional)</span></label>
-                    <textarea id="customer-note" rows="2" maxLength={300} value={customer.note} onChange={(event) => setCustomer({ ...customer, note: event.target.value })} />
+                    <label htmlFor="customer-location">Delivery location</label>
+                    <textarea id="customer-location" rows="2" autoComplete="street-address" required maxLength={300} value={customer.location} onChange={(event) => setCustomer({ ...customer, location: event.target.value })} />
                     {error && <p className="form-error" role="alert">{error}</p>}
-                    <button className="button button-primary checkout-button" type="submit">Continue to WhatsApp <ArrowRight size={16} /></button>
+                    <button className="button button-primary checkout-button" type="submit" disabled={submitting}>{submitting ? 'Sending order…' : 'Confirm order'} {submitting ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />}</button>
                   </form>
                 )}
               </div>
@@ -113,7 +116,7 @@ function CartDrawer({ cart, onClose, onChange, store }) {
 
 export default function StoreFront() {
   const { slug } = useParams();
-  const [store, setStore] = useState(defaultStore);
+  const store = { ...defaultStore, slug: slug || defaultStore.slug };
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState({});
   const [activeCategory, setActiveCategory] = useState('Everything');
@@ -121,57 +124,31 @@ export default function StoreFront() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [syncError, setSyncError] = useState('');
-  const storePath = slug ? `/api/store/${encodeURIComponent(slug)}` : '/api/store';
 
   useEffect(() => {
-    let active = true;
-    let events;
     setLoading(true);
     setSyncError('');
     setCart({});
     setActiveCategory('Everything');
-    apiRequest(storePath)
-      .then(({ store: storeInfo, products: items }) => {
-        if (active) {
-          setStore(storeInfo);
-          setProducts(items);
-          setError('');
-          events = new EventSource(`/api/store/${encodeURIComponent(storeInfo.slug)}/events`);
-          events.addEventListener('connected', () => {
-            if (active) setSyncError('');
-          });
-          events.addEventListener('error', () => {
-            if (active) setSyncError('Live updates are reconnecting. Refresh the shop if you need the latest availability.');
-          });
-          events.addEventListener('catalog', () => {
-            apiRequest(storePath)
-              .then(({ products: updatedProducts }) => {
-                if (!active) return;
-                setProducts(updatedProducts);
-                setCart((current) => Object.fromEntries(
-                  Object.entries(current).flatMap(([id, entry]) => {
-                    const latest = updatedProducts.find((product) => product.id === id);
-                    return latest?.stock
-                      ? [[id, { product: latest, quantity: Math.min(entry.quantity, latest.stock) }]]
-                      : [];
-                  })
-                ));
-                setError('');
-                setSyncError('');
-              })
-              .catch(() => {
-                if (active) setSyncError('The latest shop updates could not be loaded. Please try refreshing.');
-              });
-          });
-        }
-      })
-      .catch((requestError) => { if (active) setError(requestError.message); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => {
-      active = false;
-      events?.close();
-    };
-  }, [storePath]);
+    return subscribeToProducts((items) => {
+      const availableProducts = items.filter((product) => product.available);
+      setProducts(availableProducts);
+      setCart((current) => Object.fromEntries(
+        Object.entries(current).flatMap(([id, entry]) => {
+          const latest = availableProducts.find((product) => product.id === id);
+          return latest?.stock
+            ? [[id, { product: latest, quantity: Math.min(entry.quantity, latest.stock) }]]
+            : [];
+        })
+      ));
+      setError('');
+      setSyncError('');
+      setLoading(false);
+    }, (requestError) => {
+      setError(requestError.message);
+      setLoading(false);
+    });
+  }, []);
 
   const categories = useMemo(() => ['Everything', ...new Set(products.map((product) => product.category))], [products]);
   const visibleProducts = activeCategory === 'Everything' ? products : products.filter((product) => product.category === activeCategory);

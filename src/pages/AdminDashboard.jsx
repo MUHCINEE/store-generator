@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownUp, ArrowUpRight, Camera, Check, ImagePlus, LayoutGrid, Leaf, MoreHorizontal, PackageCheck, Plus, Search, ShoppingBag, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowDownUp, ArrowUpRight, Camera, Check, CheckCircle2, ImagePlus, LayoutGrid, Leaf, MapPin, MoreHorizontal, PackageCheck, Phone, Plus, Search, ShoppingBag, Sparkles, Trash2, X } from 'lucide-react';
 import ImageCaptureModal from '../components/ImageCaptureModal.jsx';
 import Navbar from '../components/Navbar.jsx';
-import { apiRequest, compressCanvas, formatPrice } from '../utils/storage.js';
+import { completeOrder, createProduct, updateProduct, deleteOrder, deleteProduct as removeProduct, subscribeToOrders, subscribeToProducts, compressCanvas, formatPrice } from '../utils/storage.js';
 
 const emptyForm = { name: '', price: '', description: '', ingredients: '', category: '', image: '', stock: 1, available: true };
 
@@ -117,10 +117,59 @@ function ProductForm({ initial, onSave, onClose, saving, formError }) {
   );
 }
 
-export default function AdminDashboard({ onSignOut }) {
+function OrdersModal({ orders, loading, error, busyOrderId, onComplete, onDelete, onClose }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="orders-modal" role="dialog" aria-modal="true" aria-labelledby="orders-title">
+        <div className="modal-heading">
+          <div><span className="eyebrow">CUSTOMER ORDERS</span><h2 id="orders-title">Orders <span className="orders-total">{orders.length}</span></h2></div>
+          <button className="icon-button" aria-label="Close orders" onClick={onClose}><X size={19} /></button>
+        </div>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        {loading ? (
+          <div className="admin-loading"><span className="spinner" /> Gathering your orders…</div>
+        ) : !orders.length ? (
+          <div className="orders-empty"><span className="state-icon"><CheckCircle2 size={20} /></span><h3>All caught up.</h3><p>New customer orders will appear here.</p></div>
+        ) : (
+          <div className="orders-list">
+            {orders.map((order) => (
+              <article className={`order-card ${order.status === 'completed' ? 'order-card-completed' : ''}`} key={order.id}>
+                <div className="order-card-heading">
+                  <div><h3>{order.customerName || 'Customer'}</h3><span>{order.timestamp?.toDate ? order.timestamp.toDate().toLocaleString() : 'Just received'}</span></div>
+                  <span className={`order-status ${order.status === 'completed' ? 'order-status-completed' : ''}`}><span />{order.status === 'completed' ? 'Completed' : 'New'}</span>
+                </div>
+                <div className="order-contact"><a href={`tel:${encodeURIComponent(order.phoneNumber || '')}`}><Phone size={14} />{order.phoneNumber || 'No phone provided'}</a><p><MapPin size={14} />{order.location || 'No location provided'}</p></div>
+                <div className="order-items">
+                  {(Array.isArray(order.items) ? order.items : []).map((item, index) => (
+                    <div className="order-item" key={`${order.id}-${index}`}>
+                      {item.image ? <img src={item.image} alt="" /> : <span className="order-item-placeholder"><ShoppingBag size={15} /></span>}
+                      <span className="order-item-name">{item.name || 'Product'}</span>
+                      <span className="order-item-quantity">× {item.quantity}</span>
+                      <strong>{formatPrice((Number(item.price) || 0) * (Number(item.quantity) || 0))}</strong>
+                    </div>
+                  ))}
+                </div>
+                <div className="order-card-footer">
+                  <strong>Total {formatPrice(Number(order.total) || 0)}</strong>
+                  <div>
+                    {order.status !== 'completed' && <button className="button button-outline button-small" disabled={busyOrderId === order.id} onClick={() => onComplete(order)}><Check size={14} /> Complete</button>}
+                    <button className="icon-button delete-action" disabled={busyOrderId === order.id} onClick={() => onDelete(order)} aria-label={`Delete order from ${order.customerName || 'customer'}`}><Trash2 size={15} /></button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+export default function AdminDashboard({ onSignOut, authError }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -128,21 +177,35 @@ export default function AdminDashboard({ onSignOut }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All pieces');
   const [notice, setNotice] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState('');
+  const [ordersOpen, setOrdersOpen] = useState(false);
+  const [busyOrderId, setBusyOrderId] = useState('');
 
-  async function loadProducts() {
+  useEffect(() => {
     setLoading(true);
     setLoadError('');
-    try {
-      const { products: items } = await apiRequest('/api/admin/products');
+    return subscribeToProducts((items) => {
       setProducts(items);
-    } catch (error) {
-      setLoadError(error.message);
-    } finally {
       setLoading(false);
-    }
-  }
+      setLoadError('');
+    }, (error) => {
+      setLoading(false);
+      setLoadError(error.message);
+    });
+  }, [reloadKey]);
 
-  useEffect(() => { loadProducts(); }, []);
+  useEffect(() => subscribeToOrders((items) => {
+    setOrders(items);
+    setOrdersLoading(false);
+    setOrdersError('');
+  }, (error) => {
+    setOrdersLoading(false);
+    setOrdersError(error.message);
+  }), []);
+
+  const newOrdersCount = orders.filter((order) => order.status === 'pending').length;
   const availableCount = products.filter((product) => product.available && product.stock > 0).length;
   const inventoryValue = products.reduce((sum, product) => sum + product.price * product.stock, 0);
   const filteredProducts = useMemo(() => products.filter((product) => {
@@ -161,14 +224,8 @@ export default function AdminDashboard({ onSignOut }) {
     setSaving(true);
     setFormError('');
     try {
-      const body = JSON.stringify({ ...form, price: Number(form.price), stock: Number(form.stock) });
-      const { product } = editing
-        ? await apiRequest(`/api/admin/products/${encodeURIComponent(editing.id)}`, { method: 'PUT', body })
-        : await apiRequest('/api/admin/products', { method: 'POST', body });
-      setProducts((current) => editing
-        ? current.map((item) => item.id === product.id ? product : item)
-        : [product, ...current]);
-      setLoadError('');
+      if (editing) await updateProduct(editing.id, form);
+      else await createProduct(form);
       setModalOpen(false);
       setNotice(editing ? 'Your changes are saved.' : 'Your new piece is live in the shop.');
       window.setTimeout(() => setNotice(''), 3500);
@@ -181,11 +238,7 @@ export default function AdminDashboard({ onSignOut }) {
 
   async function toggleAvailability(product) {
     try {
-      const { product: updated } = await apiRequest(`/api/admin/products/${encodeURIComponent(product.id)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ ...product, available: !product.available })
-      });
-      setProducts((current) => current.map((item) => item.id === updated.id ? updated : item));
+      await updateProduct(product.id, { ...product, available: !product.available });
     } catch (error) {
       setNotice(error.message);
       window.setTimeout(() => setNotice(''), 3500);
@@ -195,8 +248,7 @@ export default function AdminDashboard({ onSignOut }) {
   async function deleteProduct(product) {
     if (!window.confirm(`Remove "${product.name}" from your collection? This cannot be undone.`)) return;
     try {
-      await apiRequest(`/api/admin/products/${encodeURIComponent(product.id)}`, { method: 'DELETE' });
-      setProducts((current) => current.filter((item) => item.id !== product.id));
+      await removeProduct(product.id);
       setNotice('Piece removed from your collection.');
       window.setTimeout(() => setNotice(''), 3500);
     } catch (error) {
@@ -205,14 +257,40 @@ export default function AdminDashboard({ onSignOut }) {
     }
   }
 
+  async function markOrderCompleted(order) {
+    setBusyOrderId(order.id);
+    try {
+      await completeOrder(order.id);
+    } catch (error) {
+      setNotice(error.message);
+      window.setTimeout(() => setNotice(''), 3500);
+    } finally {
+      setBusyOrderId('');
+    }
+  }
+
+  async function removeOrder(order) {
+    if (!window.confirm(`Delete the order from "${order.customerName || 'this customer'}"? This cannot be undone.`)) return;
+    setBusyOrderId(order.id);
+    try {
+      await deleteOrder(order.id);
+    } catch (error) {
+      setNotice(error.message);
+      window.setTimeout(() => setNotice(''), 3500);
+    } finally {
+      setBusyOrderId('');
+    }
+  }
+
   return (
     <div className="admin-page">
-      <Navbar admin storeName="Owner's studio" onSignOut={onSignOut} />
+      <Navbar admin storeName="Owner's studio" onSignOut={onSignOut} notificationCount={newOrdersCount} onOpenOrders={() => setOrdersOpen(true)} />
       <main className="admin-main">
         <div className="admin-welcome">
           <div><span className="eyebrow"><span className="eyebrow-dot" /> YOUR LITTLE CORNER OF THE INTERNET</span><h1>Good morning,<br className="mobile-break" /> shopkeeper.</h1><p>A little snapshot of your store, right now.</p></div>
           <button className="button button-primary" onClick={() => openForm()}><Plus size={17} /> Add a piece</button>
         </div>
+        {authError && <p className="form-error" role="alert">{authError}</p>}
         {notice && <div className="toast-message" role="status"><Check size={16} />{notice}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice('')}><X size={15} /></button></div>}
         <section className="stats-grid" aria-label="Store overview">
           <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-sage"><LayoutGrid size={17} /></span><span className="stat-label">IN YOUR COLLECTION</span></div><strong>{products.length.toString().padStart(2, '0')}</strong><span className="stat-foot">pieces in your shop</span></article>
@@ -226,7 +304,7 @@ export default function AdminDashboard({ onSignOut }) {
             <label className="search-field"><Search size={16} /><input type="search" placeholder="Find a piece…" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search products" /></label>
             <label className="filter-select"><ArrowDownUp size={14} /><select value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter products"><option>All pieces</option><option>Available</option><option>Hidden</option></select></label>
           </div>
-          {loadError ? <div className="state-card"><h3>We couldn't load your collection.</h3><p>{loadError}</p><button className="button button-outline" onClick={loadProducts}>Try again</button></div> : loading ? <div className="admin-loading"><span className="spinner" /> Gathering your good things…</div> : !filteredProducts.length ? (
+          {loadError ? <div className="state-card"><h3>We couldn't load your collection.</h3><p>{loadError}</p><button className="button button-outline" onClick={() => setReloadKey((key) => key + 1)}>Try again</button></div> : loading ? <div className="admin-loading"><span className="spinner" /> Gathering your good things…</div> : !filteredProducts.length ? (
             <div className="state-card"><span className="state-icon"><Leaf size={20} /></span><h3>{products.length ? 'Nothing matches just now.' : 'A blank canvas.'}</h3><p>{products.length ? 'Try another search or filter.' : 'Your first little find is just a button away.'}</p>{!products.length && <button className="button button-primary" onClick={() => openForm()}><Plus size={16} /> Add your first piece</button>}</div>
           ) : (
             <div className="inventory-table-wrap">
@@ -248,6 +326,7 @@ export default function AdminDashboard({ onSignOut }) {
         <div className="admin-footnote"><span className="brand-mark"><Leaf size={15} /></span> Small things, thoughtfully done.</div>
       </main>
       {modalOpen && <ProductForm key={editing?.id || 'new-product'} initial={editing} onSave={saveProduct} onClose={() => setModalOpen(false)} saving={saving} formError={formError} />}
+      {ordersOpen && <OrdersModal orders={orders} loading={ordersLoading} error={ordersError} busyOrderId={busyOrderId} onComplete={markOrderCompleted} onDelete={removeOrder} onClose={() => setOrdersOpen(false)} />}
     </div>
   );
 }

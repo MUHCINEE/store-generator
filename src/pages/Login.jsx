@@ -1,10 +1,11 @@
 import { useState } from 'react';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import { ArrowLeft, ArrowRight, Leaf, LockKeyhole } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiRequest } from '../utils/storage.js';
+import { ensureFirebaseConfigured, getFirebaseAuth } from '../firebase.js';
 
-export default function Login({ onLogin }) {
-  const [username, setUsername] = useState('');
+export default function Login({ onLogin, authError = '' }) {
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -15,11 +16,18 @@ export default function Login({ onLogin }) {
     setError('');
     setLoading(true);
     try {
-      await apiRequest('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
-      onLogin();
+      ensureFirebaseConfigured();
+      const credential = await signInWithEmailAndPassword(getFirebaseAuth(), email.trim(), password);
+      onLogin(credential.user);
       navigate('/admin', { replace: true });
     } catch (requestError) {
-      setError(requestError.message);
+      const messages = {
+        'auth/invalid-credential': 'That email and password combination did not match.',
+        'auth/invalid-email': 'Enter a valid email address.',
+        'auth/too-many-requests': 'Too many sign-in attempts. Please wait and try again.',
+        'auth/network-request-failed': 'Could not reach Firebase. Check your connection and try again.'
+      };
+      setError(messages[requestError.code] || requestError.message);
     } finally {
       setLoading(false);
     }
@@ -33,11 +41,11 @@ export default function Login({ onLogin }) {
         <h1>Good to have<br />you back.</h1>
         <p className="login-intro">Sign in to tend your little corner of the internet.</p>
         <form className="login-form" onSubmit={submit}>
-          <label htmlFor="username">Username</label>
-          <input id="username" name="username" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
+          <label htmlFor="email">Email</label>
+          <input id="email" name="email" type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} />
           <label htmlFor="password">Password</label>
           <input id="password" name="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
-          {error && <p className="form-error" role="alert">{error}</p>}
+          {(error || authError) && <p className="form-error" role="alert">{error || authError}</p>}
           <button className="button button-primary login-submit" disabled={loading}>
             {loading ? 'Signing in…' : 'Enter your studio'} {!loading && <ArrowRight size={16} />}
           </button>

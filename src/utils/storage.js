@@ -1,44 +1,154 @@
-export async function apiRequest(path, options = {}) {
-  let response;
-  try {
-    response = await fetch(path, {
-      ...options,
-      credentials: 'same-origin',
-      headers: {
-        ...options.headers,
-        ...(options.body ? { 'Content-Type': 'application/json' } : {})
-      }
-    });
-  } catch {
-    throw new Error('Could not reach the store. Check your connection and try again.');
-  }
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getFirestore,
+  orderBy,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc
+} from 'firebase/firestore';
+import { ensureFirebaseConfigured, getFirebaseApp } from '../firebase.js';
 
-  if (response.status === 204) return null;
-  let responseText;
+function getProductsCollection() {
+  return collection(getFirestore(getFirebaseApp()), 'products');
+}
+
+function getOrdersCollection() {
+  return collection(getFirestore(getFirebaseApp()), 'orders');
+}
+
+function firebaseError(error) {
+  if (error?.code === 'permission-denied') {
+    return new Error('You do not have permission to access the product collection. Check the Firestore security rules.');
+  }
+  if (error?.code === 'unavailable') {
+    return new Error('Firestore is unavailable. Check your connection and try again.');
+  }
+  return new Error(error?.message || 'The product request could not be completed. Please try again.');
+}
+
+function productData(product) {
+  return {
+    name: product.name.trim(),
+    price: Number(product.price),
+    description: product.description.trim(),
+    ingredients: (product.ingredients || '').trim(),
+    category: product.category.trim(),
+    image: product.image || '',
+    stock: Number(product.stock),
+    available: Boolean(product.available)
+  };
+}
+
+export function subscribeToProducts(onProducts, onError) {
   try {
-    responseText = await response.text();
-  } catch {
-    throw new Error('The store response could not be read. Please try again.');
+    ensureFirebaseConfigured();
+    return onSnapshot(getProductsCollection(), (snapshot) => {
+      const products = snapshot.docs
+        .map((item) => ({ id: item.id, ...item.data() }))
+        .sort((left, right) => (right.createdAt?.toMillis?.() || 0) - (left.createdAt?.toMillis?.() || 0));
+      onProducts(products);
+    }, (error) => onError(firebaseError(error)));
+  } catch (error) {
+    onError(firebaseError(error));
+    return () => {};
   }
-  let data;
+}
+
+export function subscribeToOrders(onOrders, onError) {
   try {
-    if (!responseText) throw new Error('Empty response');
-    data = JSON.parse(responseText);
-  } catch {
-    if (response.ok) throw new Error('The store returned an invalid response. Please try again.');
-    data = {};
+    ensureFirebaseConfigured();
+    return onSnapshot(query(getOrdersCollection(), orderBy('timestamp', 'desc')), (snapshot) => {
+      onOrders(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+    }, (error) => onError(firebaseError(error)));
+  } catch (error) {
+    onError(firebaseError(error));
+    return () => {};
   }
-  if (response.status === 401 && path.startsWith('/api/admin/')) {
-    window.dispatchEvent(new Event('atelier:session-expired'));
+}
+
+export async function createOrder({ customerName, phoneNumber, location, items, storeSlug }) {
+  ensureFirebaseConfigured();
+  try {
+    const order = {
+      customerName: customerName.trim(),
+      phoneNumber: phoneNumber.trim(),
+      location: location.trim(),
+      items: items.map(({ product, quantity }) => ({
+        name: product.name,
+        image: product.image || '',
+        price: Number(product.price),
+        quantity: Number(quantity)
+      })),
+      total: items.reduce((sum, { product, quantity }) => sum + product.price * quantity, 0),
+      storeSlug,
+      timestamp: serverTimestamp(),
+      status: 'pending'
+    };
+    const reference = await addDoc(getOrdersCollection(), order);
+    return reference.id;
+  } catch (error) {
+    throw firebaseError(error);
   }
-  if (!response.ok) {
-    const message = typeof data?.error === 'string' ? data.error : `Request failed (${response.status}).`;
-    throw new Error(message);
+}
+
+export async function completeOrder(orderId) {
+  ensureFirebaseConfigured();
+  try {
+    await updateDoc(doc(getFirestore(getFirebaseApp()), 'orders', orderId), {
+      status: 'completed',
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    throw firebaseError(error);
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('The store returned an invalid response. Please try again.');
+}
+
+export async function deleteOrder(orderId) {
+  ensureFirebaseConfigured();
+  try {
+    await deleteDoc(doc(getFirestore(getFirebaseApp()), 'orders', orderId));
+  } catch (error) {
+    throw firebaseError(error);
   }
-  return data;
+}
+
+export async function createProduct(product) {
+  ensureFirebaseConfigured();
+  try {
+    const reference = await addDoc(getProductsCollection(), {
+      ...productData(product),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    return { id: reference.id, ...productData(product) };
+  } catch (error) {
+    throw firebaseError(error);
+  }
+}
+
+export async function updateProduct(productId, product) {
+  ensureFirebaseConfigured();
+  try {
+    await updateDoc(doc(getFirestore(getFirebaseApp()), 'products', productId), {
+      ...productData(product),
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    throw firebaseError(error);
+  }
+}
+
+export async function deleteProduct(productId) {
+  ensureFirebaseConfigured();
+  try {
+    await deleteDoc(doc(getFirestore(getFirebaseApp()), 'products', productId));
+  } catch (error) {
+    throw firebaseError(error);
+  }
 }
 
 export function formatPrice(value) {
@@ -48,7 +158,7 @@ export function formatPrice(value) {
 export function compressCanvas(canvas) {
   for (const quality of [0.78, 0.68, 0.58, 0.48]) {
     const dataUrl = canvas.toDataURL('image/jpeg', quality);
-    if (dataUrl.length <= 2_500_000) return dataUrl;
+    if (dataUrl.length <= 900_000) return dataUrl;
   }
-  throw new Error('That image is too large after compression. Choose a smaller file.');
+  throw new Error('That image is too large for Firestore. Choose a smaller image.');
 }
