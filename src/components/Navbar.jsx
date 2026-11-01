@@ -1,7 +1,8 @@
 import { ArrowUpRight, Bell, Leaf, ShoppingBag } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-export default function Navbar({ storeName, cartCount = 0, onOpenCart, admin = false, onSignOut, notificationCount = 0, onOpenOrders }) {
+export default function Navbar({ storeName, storeSlug, cartCount = 0, onOpenCart, admin = false, onSignOut, notificationCount = 0, onOpenOrders }) {
+  const publicStorePath = storeSlug ? `/store/${encodeURIComponent(storeSlug)}` : '/';
   return (
     <header className="site-header">
       <Link className="brand" to="/">
@@ -10,7 +11,7 @@ export default function Navbar({ storeName, cartCount = 0, onOpenCart, admin = f
       </Link>
       {admin ? (
         <nav className="header-actions">
-          <Link className="header-link" to="/">View store <ArrowUpRight size={15} /></Link>
+          <Link className="header-link" to={publicStorePath}>View store <ArrowUpRight size={15} /></Link>
           <button className="notification-button" type="button" onClick={onOpenOrders} aria-label={`Open orders, ${notificationCount} new`}>
             <Bell size={18} />
             {notificationCount > 0 && <span className="notification-badge">{notificationCount > 99 ? '99+' : notificationCount}</span>}

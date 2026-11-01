@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDownUp, ArrowUpRight, Camera, Check, CheckCircle2, ImagePlus, LayoutGrid, Leaf, MapPin, MoreHorizontal, PackageCheck, Phone, Plus, Search, ShoppingBag, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowDownUp, ArrowUpRight, Camera, Check, CheckCircle2, Copy, ExternalLink, ImagePlus, LayoutGrid, Leaf, MapPin, MoreHorizontal, PackageCheck, Phone, Plus, Search, ShoppingBag, Sparkles, Trash2, X } from 'lucide-react';
 import ImageCaptureModal from '../components/ImageCaptureModal.jsx';
 import Navbar from '../components/Navbar.jsx';
-import { completeOrder, createProduct, updateProduct, deleteOrder, deleteProduct as removeProduct, subscribeToOrders, subscribeToProducts, compressCanvas, formatPrice } from '../utils/storage.js';
+import { completeOrder, createProduct, updateProduct, deleteOrder, deleteProduct as removeProduct, subscribeToOrders, subscribeToProducts, subscribeToUserProfile, compressCanvas, formatPrice } from '../utils/storage.js';
 
 const emptyForm = { name: '', price: '', description: '', ingredients: '', category: '', image: '', stock: 1, available: true };
 
@@ -135,7 +135,7 @@ function OrdersModal({ orders, loading, error, busyOrderId, onComplete, onDelete
             {orders.map((order) => (
               <article className={`order-card ${order.status === 'completed' ? 'order-card-completed' : ''}`} key={order.id}>
                 <div className="order-card-heading">
-                  <div><h3>{order.customerName || 'Customer'}</h3><span>{order.timestamp?.toDate ? order.timestamp.toDate().toLocaleString() : 'Just received'}</span></div>
+                  <div><h3>{order.customerName || 'Customer'}</h3><span>{order.timestamp ? new Date(order.timestamp).toLocaleString() : 'Just received'}</span></div>
                   <span className={`order-status ${order.status === 'completed' ? 'order-status-completed' : ''}`}><span />{order.status === 'completed' ? 'Completed' : 'New'}</span>
                 </div>
                 <div className="order-contact"><a href={`tel:${encodeURIComponent(order.phoneNumber || '')}`}><Phone size={14} />{order.phoneNumber || 'No phone provided'}</a><p><MapPin size={14} />{order.location || 'No location provided'}</p></div>
@@ -165,8 +165,11 @@ function OrdersModal({ orders, loading, error, busyOrderId, onComplete, onDelete
   );
 }
 
-export default function AdminDashboard({ onSignOut, authError }) {
+export default function AdminDashboard({ user, onSignOut, authError }) {
   const [products, setProducts] = useState([]);
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -178,6 +181,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
   const [filter, setFilter] = useState('All pieces');
   const [notice, setNotice] = useState('');
   const [orders, setOrders] = useState([]);
+  const [ordersReloadKey, setOrdersReloadKey] = useState(0);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersError, setOrdersError] = useState('');
   const [ordersOpen, setOrdersOpen] = useState(false);
@@ -193,17 +197,29 @@ export default function AdminDashboard({ onSignOut, authError }) {
     }, (error) => {
       setLoading(false);
       setLoadError(error.message);
-    });
-  }, [reloadKey]);
+    }, user.uid);
+  }, [reloadKey, user.uid]);
 
-  useEffect(() => subscribeToOrders((items) => {
+  useEffect(() => subscribeToOrders(user.uid, (items) => {
     setOrders(items);
     setOrdersLoading(false);
     setOrdersError('');
   }, (error) => {
     setOrdersLoading(false);
     setOrdersError(error.message);
-  }), []);
+  }), [ordersReloadKey, user.uid]);
+
+  useEffect(() => {
+    setProfileLoading(true);
+    return subscribeToUserProfile(user.uid, (currentProfile) => {
+      setProfile(currentProfile);
+      setProfileLoading(false);
+      setProfileError(currentProfile ? '' : 'Your store profile could not be found. Please sign out and register again.');
+    }, (error) => {
+      setProfileLoading(false);
+      setProfileError(error.message);
+    });
+  }, [user.uid]);
 
   const newOrdersCount = orders.filter((order) => order.status === 'pending').length;
   const availableCount = products.filter((product) => product.available && product.stock > 0).length;
@@ -227,6 +243,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
       if (editing) await updateProduct(editing.id, form);
       else await createProduct(form);
       setModalOpen(false);
+      setReloadKey((key) => key + 1);
       setNotice(editing ? 'Your changes are saved.' : 'Your new piece is live in the shop.');
       window.setTimeout(() => setNotice(''), 3500);
     } catch (error) {
@@ -239,6 +256,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
   async function toggleAvailability(product) {
     try {
       await updateProduct(product.id, { ...product, available: !product.available });
+      setReloadKey((key) => key + 1);
     } catch (error) {
       setNotice(error.message);
       window.setTimeout(() => setNotice(''), 3500);
@@ -249,6 +267,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
     if (!window.confirm(`Remove "${product.name}" from your collection? This cannot be undone.`)) return;
     try {
       await removeProduct(product.id);
+      setReloadKey((key) => key + 1);
       setNotice('Piece removed from your collection.');
       window.setTimeout(() => setNotice(''), 3500);
     } catch (error) {
@@ -261,6 +280,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
     setBusyOrderId(order.id);
     try {
       await completeOrder(order.id);
+      setOrdersReloadKey((key) => key + 1);
     } catch (error) {
       setNotice(error.message);
       window.setTimeout(() => setNotice(''), 3500);
@@ -274,6 +294,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
     setBusyOrderId(order.id);
     try {
       await deleteOrder(order.id);
+      setOrdersReloadKey((key) => key + 1);
     } catch (error) {
       setNotice(error.message);
       window.setTimeout(() => setNotice(''), 3500);
@@ -282,16 +303,33 @@ export default function AdminDashboard({ onSignOut, authError }) {
     }
   }
 
+  async function copyStoreLink() {
+    const url = `${window.location.origin}/store/${encodeURIComponent(profile.storeSlug)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setNotice('Your store link has been copied.');
+      window.setTimeout(() => setNotice(''), 3500);
+    } catch (error) {
+      setNotice('Could not copy the link. Select and copy the address shown below.');
+      window.setTimeout(() => setNotice(''), 5000);
+    }
+  }
+
   return (
     <div className="admin-page">
-      <Navbar admin storeName="Owner's studio" onSignOut={onSignOut} notificationCount={newOrdersCount} onOpenOrders={() => setOrdersOpen(true)} />
+      <Navbar admin storeName={profile?.fullName ? `${profile.fullName}'s studio` : "Owner's studio"} storeSlug={profile?.storeSlug} onSignOut={onSignOut} notificationCount={newOrdersCount} onOpenOrders={() => setOrdersOpen(true)} />
       <main className="admin-main">
         <div className="admin-welcome">
-          <div><span className="eyebrow"><span className="eyebrow-dot" /> YOUR LITTLE CORNER OF THE INTERNET</span><h1>Good morning,<br className="mobile-break" /> shopkeeper.</h1><p>A little snapshot of your store, right now.</p></div>
-          <button className="button button-primary" onClick={() => openForm()}><Plus size={17} /> Add a piece</button>
+          <div><span className="eyebrow"><span className="eyebrow-dot" /> YOUR LITTLE CORNER OF THE INTERNET</span><h1>Welcome,<br className="mobile-break" /> {profile?.fullName || 'shopkeeper'}.</h1><p>A little snapshot of your store, right now.</p></div>
+          <button className="button button-primary" onClick={() => openForm()} disabled={profileLoading || !profile?.storeSlug}><Plus size={17} /> Add a piece</button>
         </div>
         {authError && <p className="form-error" role="alert">{authError}</p>}
+        {profileError && <div className="state-card profile-error-card"><h3>We couldn't load your store profile.</h3><p>{profileError}</p></div>}
         {notice && <div className="toast-message" role="status"><Check size={16} />{notice}<button className="icon-button" aria-label="Dismiss notification" onClick={() => setNotice('')}><X size={15} /></button></div>}
+        {profile && <section className="store-link-card" aria-label="Your public store link">
+          <div><span className="eyebrow">YOUR PUBLIC STOREFRONT</span><a className="store-link-address" href={`/store/${encodeURIComponent(profile.storeSlug)}`} target="_blank" rel="noreferrer"><span>{window.location.origin}/store/{profile.storeSlug}</span><ExternalLink size={15} /></a></div>
+          <button type="button" className="button button-outline button-small" onClick={copyStoreLink}><Copy size={14} /> Copy link</button>
+        </section>}
         <section className="stats-grid" aria-label="Store overview">
           <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-sage"><LayoutGrid size={17} /></span><span className="stat-label">IN YOUR COLLECTION</span></div><strong>{products.length.toString().padStart(2, '0')}</strong><span className="stat-foot">pieces in your shop</span></article>
           <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-peach"><PackageCheck size={17} /></span><span className="stat-label">READY TO FIND A HOME</span></div><strong>{availableCount.toString().padStart(2, '0')}</strong><span className="stat-foot">pieces available now</span></article>
@@ -299,7 +337,7 @@ export default function AdminDashboard({ onSignOut, authError }) {
         </section>
 
         <section className="inventory-section">
-          <div className="inventory-heading"><div><span className="eyebrow">YOUR GOOD THINGS</span><h2>The collection <span>{products.length}</span></h2></div><button className="button button-primary button-mobile-add" onClick={() => openForm()}><Plus size={16} /> Add a piece</button></div>
+          <div className="inventory-heading"><div><span className="eyebrow">YOUR GOOD THINGS</span><h2>The collection <span>{products.length}</span></h2></div><button className="button button-primary button-mobile-add" onClick={() => openForm()} disabled={profileLoading || !profile?.storeSlug}><Plus size={16} /> Add a piece</button></div>
           <div className="inventory-toolbar">
             <label className="search-field"><Search size={16} /><input type="search" placeholder="Find a piece…" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search products" /></label>
             <label className="filter-select"><ArrowDownUp size={14} /><select value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter products"><option>All pieces</option><option>Available</option><option>Hidden</option></select></label>

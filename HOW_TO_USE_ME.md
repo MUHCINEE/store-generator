@@ -1,48 +1,52 @@
-# Maison Verde — the little shop
+# Store Generator
 
-A mobile-first storefront and owner dashboard built with React, Vite, Firebase Authentication, and Cloud Firestore.
+A React/Vite storefront and Express API backed by a local MySQL database.
 
-- Public storefront: `/`, `/storefront`, or `/store/<STORE_SLUG>`
-- Owner sign-in: `/login`
-- Product management: `/admin`
+## Requirements
 
-## Requirements and Firebase setup
+- Node.js 20.19 or newer and npm.
+- MySQL Server 8.0 or newer, running locally.
 
-- Node.js **20.19 or newer** and npm.
-- A Firebase project with **Email/Password Authentication** enabled and **Cloud Firestore** created.
-- Copy `.env.example` to `.env` and fill in the web app configuration from Firebase Console → Project settings → Your apps. The `apiKey`, `authDomain`, `projectId`, and `appId` values are required. Store name and slug can also be set in `.env`.
-- Create owner accounts in Firebase Console → Authentication → Users. The app has no sign-up route; only accounts created in the Firebase project can sign in.
-- Publish the rules in [`firestore.rules`](./firestore.rules) to the project's Firestore database. They allow public product reads and customer order submissions, while requiring Firebase Authentication for product writes and order management. Restrict account creation in Firebase to trusted owners.
-- The frontend Firebase configuration is included in the browser bundle. Firebase API keys identify the project; use Firestore security rules to protect data and never put service-account credentials in frontend configuration.
+## Configure MySQL
 
-Products and customer orders are stored in the `products` and `orders` collections. The storefront listens to products in real time; dashboard additions, edits, and deletions appear without a manual refresh. Customer checkout creates a pending order, and the dashboard listens for new orders and lets authenticated owners complete or delete them.
+1. Copy `.env.example` to `.env` if you do not already have a local environment file.
+2. Set `DB_HOST`, `DB_PORT`, `DB_USER`, and `DB_PASSWORD` for your MySQL server. Choose a database name with letters, numbers, and underscores for `DB_NAME`.
+3. Create the database once in MySQL:
 
-## Run locally
+   ```sql
+   CREATE DATABASE store_generator
+     CHARACTER SET utf8mb4
+     COLLATE utf8mb4_unicode_ci;
+   ```
 
-1. Copy `.env.example` to `.env` and fill in the Firebase web app values.
-2. Install dependencies with `npm install`.
-3. Start Vite with `npm run dev`.
-4. Open the URL printed by Vite (normally `http://localhost:5173`), then sign in at `/login` with an account created in Firebase Authentication.
-5. Add and manage products at `/admin`. The public collection is available at `/` and `/storefront`.
+   If you changed `DB_NAME`, use that name instead. The API automatically creates the required tables and indexes the first time it connects. The schema is also available in [`schema.sql`](./schema.sql).
+4. Install Node dependencies with `npm install`.
+5. Run `npm run dev`. This starts both the Vite frontend and Express API. Open the Vite URL (normally `http://localhost:5173`) and create an owner account.
 
-The `.env` file is local configuration and must not be committed. Firebase reads and writes require an internet connection and correctly published Firestore rules.
+The Express API listens on `PORT` (default `3000`); Vite proxies `/api` requests to it. For production, run `npm run build` followed by `npm start`; Express then serves the built app and API from one origin.
 
-## Build and production hosting
+## App routes
 
-```sh
-npm run build
-npm start
-```
+- `/register` — create an owner account and a unique public store username.
+- `/login` — sign in with email or username.
+- `/admin` — manage your own products and customer orders.
+- `/store/<username>` — public storefront with checkout.
+- `/` and `/storefront` — storefront selected by `VITE_STORE_SLUG`.
 
-The production server serves the Vite build from `dist/` on `PORT` (default `3000`). Alternatively, deploy `dist/` to a static host with SPA fallback enabled. Set the `VITE_FIREBASE_*` and `VITE_STORE_*` values in the build environment before running the production build.
+## MySQL tables
 
-Firebase Auth and Firestore require the deployed site domain to be authorized in Firebase Authentication settings. Use HTTPS for production.
+- `users`: owner profile, unique email/username, and a salted scrypt password hash.
+- `sessions`: expiring server-side sessions; only a random session token is sent in an HttpOnly, SameSite=Lax cookie.
+- `products`: each product belongs to a user and their store.
+- `orders`: customer details, server-verified product/price snapshots, total, status, and owner.
 
-## Security and data notes
+Passwords are never stored in plaintext. Product and order endpoints scope private operations to the authenticated session owner. Public order creation verifies the store, products, availability, quantities, and total on the server rather than trusting browser-supplied prices.
 
-- `/admin` is guarded by Firebase Authentication in the client. Firestore security rules are the actual access-control boundary: product writes and order reads/updates/deletes require authentication, while order creation is public so customers can check out.
-- Only create trusted owner accounts in Firebase Authentication. If the Firebase project allows public account creation, any new account will be able to write products under the supplied rules.
-- Product images are compressed into JPEG data URLs before being stored in Firestore documents. Keep them below Firestore's 1 MiB per-document size limit; larger image catalogs should use Firebase Storage instead.
-- Customer order documents contain the name, phone, delivery location, item names/images/prices/quantities, total, store slug, server timestamp, and pending/completed status. Public order creation is necessary for guest checkout; do not put sensitive payment information in an order.
-- Existing products in the old SQLite database are not automatically copied to Firestore. Export/import them separately if they need to be retained in the new catalog.
-- Checkout records an order request; it does not process payments or reserve stock. Confirm availability and delivery with the customer separately.
+The dashboard order feed polls the local API periodically. Product image data is stored in MySQL `LONGTEXT`; for larger catalogs, use a dedicated file/object store.
+
+## Troubleshooting
+
+- If the app opens but data operations report MySQL is unavailable, confirm MySQL is running, the database exists, and the `.env` credentials are correct.
+- `npm run dev` starts both the API and frontend. If the API port is busy, set `PORT` and `API_PROXY_TARGET` to the same available port, for example `PORT=3001` and `API_PROXY_TARGET=http://127.0.0.1:3001`.
+- If an account cannot be created, check that the database user can create tables and has read/write permissions on `DB_NAME`.
+- Existing remote database data is not copied into MySQL. Export it separately if you need to preserve it.

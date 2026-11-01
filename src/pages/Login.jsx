@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
 import { ArrowLeft, ArrowRight, Leaf, LockKeyhole } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ensureFirebaseConfigured, getFirebaseAuth } from '../firebase.js';
+import { signIn } from '../utils/storage.js';
 
 export default function Login({ onLogin, authError = '' }) {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -16,18 +15,11 @@ export default function Login({ onLogin, authError = '' }) {
     setError('');
     setLoading(true);
     try {
-      ensureFirebaseConfigured();
-      const credential = await signInWithEmailAndPassword(getFirebaseAuth(), email.trim(), password);
-      onLogin(credential.user);
+      const user = await signIn(identifier.trim(), password);
+      onLogin(user);
       navigate('/admin', { replace: true });
     } catch (requestError) {
-      const messages = {
-        'auth/invalid-credential': 'That email and password combination did not match.',
-        'auth/invalid-email': 'Enter a valid email address.',
-        'auth/too-many-requests': 'Too many sign-in attempts. Please wait and try again.',
-        'auth/network-request-failed': 'Could not reach Firebase. Check your connection and try again.'
-      };
-      setError(messages[requestError.code] || requestError.message);
+      setError(requestError.message || 'Sign-in failed. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -41,8 +33,8 @@ export default function Login({ onLogin, authError = '' }) {
         <h1>Good to have<br />you back.</h1>
         <p className="login-intro">Sign in to tend your little corner of the internet.</p>
         <form className="login-form" onSubmit={submit}>
-          <label htmlFor="email">Email</label>
-          <input id="email" name="email" type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} />
+          <label htmlFor="identifier">Email or username</label>
+          <input id="identifier" name="username" type="text" autoComplete="username" required value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
           <label htmlFor="password">Password</label>
           <input id="password" name="password" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
           {(error || authError) && <p className="form-error" role="alert">{error || authError}</p>}
@@ -51,6 +43,7 @@ export default function Login({ onLogin, authError = '' }) {
           </button>
         </form>
         <div className="login-security"><LockKeyhole size={14} /> Your studio is private and protected.</div>
+        <p className="login-register">New around here? <Link to="/register">Create your store</Link></p>
       </section>
       <p className="login-footer">A little more room for beautiful things.</p>
     </main>

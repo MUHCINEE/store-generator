@@ -1,0 +1,26 @@
+my-id/
+│
+├── package.json                   # ملف الإعدادات والمكتبات (Dependencies مثل React, Tailwind, Lucide, إلخ)
+├── README.md                      # شرح عام حول المشروع
+├── HOW_TO_USE_ME.md               # الدليل الشامل (كما طلبت، يشرح كل فايل وكيفاش تشغل المشروع)
+│
+├── public/                        # الملفات الثابتة والصور الافتراضية
+│   └── favicon.ico
+│
+└── src/
+    ├── App.jsx                    # المكون الرئيسي لتوجيه الصفحات (Routing)
+    ├── main.jsx                   # نقطة انطلاق التطبيق (Entry Point)
+    ├── index.css                  # ملف الـ Tailwind والتنسيقات العامة (Light Theme Styles)
+    │
+    ├── components/                # المكونات المشتركة
+    │   ├── Navbar.jsx             # شريط التنقل العلوي
+    │   ├── ProtectedRoute.jsx     # حماية مسار الـ Dashboard (تحقق من الـ Login)
+    │   └── ImageCaptureModal.jsx  # واجهة التقاط الصورة بالكاميرا أو الـ Upload
+    │
+    ├── pages/                     # صفحات المشروع الأساسية
+    │   ├── Login.jsx              # صفحة تسجيل الدخول الخاصة بصاحب المشروع
+    │   ├── AdminDashboard.jsx     # لوحة التحكم (إضافة، تعديل، وحذف المنتجات + الكاميرا)
+    │   └── Storefront.jsx         # الواجهة العامة للزبناء (عرض المنتجات + سلة الشراء Cart)
+    │
+    └── utils/                     # دوال مساعدة
+        └── storage.js             # إدارة تخزين البيانات محلياً أو ربطها بقاعدة بيانات مؤقتة

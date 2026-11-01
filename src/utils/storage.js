@@ -1,154 +1,151 @@
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getFirestore,
-  orderBy,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  updateDoc
-} from 'firebase/firestore';
-import { ensureFirebaseConfigured, getFirebaseApp } from '../firebase.js';
-
-function getProductsCollection() {
-  return collection(getFirestore(getFirebaseApp()), 'products');
-}
-
-function getOrdersCollection() {
-  return collection(getFirestore(getFirebaseApp()), 'orders');
-}
-
-function firebaseError(error) {
-  if (error?.code === 'permission-denied') {
-    return new Error('You do not have permission to access the product collection. Check the Firestore security rules.');
+async function request(path, { method = 'GET', body, signal } = {}) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    throw new Error('Could not reach the local store server. Start it with npm run dev and check your connection.');
   }
-  if (error?.code === 'unavailable') {
-    return new Error('Firestore is unavailable. Check your connection and try again.');
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(result?.error || `The server returned an unexpected response (${response.status}).`);
+    error.status = response.status;
+    error.code = result?.code;
+    throw error;
   }
-  return new Error(error?.message || 'The product request could not be completed. Please try again.');
+  return result;
 }
 
-function productData(product) {
-  return {
-    name: product.name.trim(),
-    price: Number(product.price),
-    description: product.description.trim(),
-    ingredients: (product.ingredients || '').trim(),
-    category: product.category.trim(),
-    image: product.image || '',
-    stock: Number(product.stock),
-    available: Boolean(product.available)
+function subscribe(path, onData, onError, interval = 0) {
+  let active = true;
+  let pending = false;
+  const controller = new AbortController();
+
+  async function refresh() {
+    if (!active || pending) return;
+    pending = true;
+    try {
+      const result = await request(path, { signal: controller.signal });
+      if (active) onData(result);
+    } catch (error) {
+      if (active && error.name !== 'AbortError') onError(error);
+    } finally {
+      pending = false;
+    }
+  }
+
+  refresh();
+  const timer = interval ? window.setInterval(refresh, interval) : null;
+  return () => {
+    active = false;
+    controller.abort();
+    if (timer !== null) window.clearInterval(timer);
   };
 }
 
-export function subscribeToProducts(onProducts, onError) {
-  try {
-    ensureFirebaseConfigured();
-    return onSnapshot(getProductsCollection(), (snapshot) => {
-      const products = snapshot.docs
-        .map((item) => ({ id: item.id, ...item.data() }))
-        .sort((left, right) => (right.createdAt?.toMillis?.() || 0) - (left.createdAt?.toMillis?.() || 0));
-      onProducts(products);
-    }, (error) => onError(firebaseError(error)));
-  } catch (error) {
-    onError(firebaseError(error));
-    return () => {};
-  }
+export async function getCurrentUser() {
+  const result = await request('/api/auth/me');
+  return result.user;
 }
 
-export function subscribeToOrders(onOrders, onError) {
+export async function signIn(identifier, password) {
+  const result = await request('/api/auth/login', {
+    method: 'POST',
+    body: { identifier, password }
+  });
+  return result.user;
+}
+
+export async function signOutAccount() {
+  await request('/api/auth/logout', { method: 'POST' });
+}
+
+export async function createAccount(profile) {
+  const result = await request('/api/auth/register', {
+    method: 'POST',
+    body: profile
+  });
+  return result.user;
+}
+
+export async function isUsernameAvailable(username) {
+  const result = await request(`/api/auth/username-available?username=${encodeURIComponent(username)}`);
+  return result.available;
+}
+
+export function subscribeToProducts(onProducts, onError, ownerId = '', storeSlug = '') {
+  const path = ownerId
+    ? '/api/products'
+    : `/api/stores/${encodeURIComponent(storeSlug || import.meta.env.VITE_STORE_SLUG || 'maison-verde')}/products`;
+  return subscribe(path, onProducts, onError, 10000);
+}
+
+export function subscribeToOrders(_ownerId, onOrders, onError) {
+  return subscribe('/api/orders', onOrders, onError, 5000);
+}
+
+export function subscribeToUserProfile(_userId, onProfile, onError) {
+  return subscribe('/api/users/me', onProfile, onError);
+}
+
+export async function getPublicStore(storeSlug) {
   try {
-    ensureFirebaseConfigured();
-    return onSnapshot(query(getOrdersCollection(), orderBy('timestamp', 'desc')), (snapshot) => {
-      onOrders(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
-    }, (error) => onError(firebaseError(error)));
+    return await request(`/api/stores/${encodeURIComponent(storeSlug)}`);
   } catch (error) {
-    onError(firebaseError(error));
-    return () => {};
+    if (error.status === 404) return null;
+    throw error;
   }
 }
 
 export async function createOrder({ customerName, phoneNumber, location, items, storeSlug }) {
-  ensureFirebaseConfigured();
-  try {
-    const order = {
-      customerName: customerName.trim(),
-      phoneNumber: phoneNumber.trim(),
-      location: location.trim(),
-      items: items.map(({ product, quantity }) => ({
-        name: product.name,
-        image: product.image || '',
-        price: Number(product.price),
-        quantity: Number(quantity)
-      })),
-      total: items.reduce((sum, { product, quantity }) => sum + product.price * quantity, 0),
+  const result = await request('/api/orders', {
+    method: 'POST',
+    body: {
+      customerName,
+      phoneNumber,
+      location,
       storeSlug,
-      timestamp: serverTimestamp(),
-      status: 'pending'
-    };
-    const reference = await addDoc(getOrdersCollection(), order);
-    return reference.id;
-  } catch (error) {
-    throw firebaseError(error);
-  }
+      items: items.map(({ product, quantity }) => ({
+        productId: product.id,
+        quantity
+      }))
+    }
+  });
+  return result.id;
 }
 
 export async function completeOrder(orderId) {
-  ensureFirebaseConfigured();
-  try {
-    await updateDoc(doc(getFirestore(getFirebaseApp()), 'orders', orderId), {
-      status: 'completed',
-      updatedAt: serverTimestamp()
-    });
-  } catch (error) {
-    throw firebaseError(error);
-  }
+  await request(`/api/orders/${encodeURIComponent(orderId)}/complete`, { method: 'PATCH' });
 }
 
 export async function deleteOrder(orderId) {
-  ensureFirebaseConfigured();
-  try {
-    await deleteDoc(doc(getFirestore(getFirebaseApp()), 'orders', orderId));
-  } catch (error) {
-    throw firebaseError(error);
-  }
+  await request(`/api/orders/${encodeURIComponent(orderId)}`, { method: 'DELETE' });
 }
 
 export async function createProduct(product) {
-  ensureFirebaseConfigured();
-  try {
-    const reference = await addDoc(getProductsCollection(), {
-      ...productData(product),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
-    return { id: reference.id, ...productData(product) };
-  } catch (error) {
-    throw firebaseError(error);
-  }
+  const result = await request('/api/products', {
+    method: 'POST',
+    body: product
+  });
+  return result.product;
 }
 
 export async function updateProduct(productId, product) {
-  ensureFirebaseConfigured();
-  try {
-    await updateDoc(doc(getFirestore(getFirebaseApp()), 'products', productId), {
-      ...productData(product),
-      updatedAt: serverTimestamp()
-    });
-  } catch (error) {
-    throw firebaseError(error);
-  }
+  await request(`/api/products/${encodeURIComponent(productId)}`, {
+    method: 'PATCH',
+    body: product
+  });
 }
 
 export async function deleteProduct(productId) {
-  ensureFirebaseConfigured();
-  try {
-    await deleteDoc(doc(getFirestore(getFirebaseApp()), 'products', productId));
-  } catch (error) {
-    throw firebaseError(error);
-  }
+  await request(`/api/products/${encodeURIComponent(productId)}`, { method: 'DELETE' });
 }
 
 export function formatPrice(value) {
@@ -160,5 +157,5 @@ export function compressCanvas(canvas) {
     const dataUrl = canvas.toDataURL('image/jpeg', quality);
     if (dataUrl.length <= 900_000) return dataUrl;
   }
-  throw new Error('That image is too large for Firestore. Choose a smaller image.');
+  throw new Error('That image is too large. Choose a smaller image.');
 }

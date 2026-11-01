@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowRight, Check, ChevronDown, Leaf, LoaderCircle, Minus, Plus, ShoppingBag, Sparkles, X } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import Navbar from '../components/Navbar.jsx';
-import { createOrder, formatPrice, subscribeToProducts } from '../utils/storage.js';
+import { createOrder, formatPrice, getPublicStore, subscribeToProducts } from '../utils/storage.js';
 
 const defaultStore = {
   name: import.meta.env.VITE_STORE_NAME || 'Maison Verde',
@@ -44,6 +44,9 @@ function CartDrawer({ cart, onClose, onChange, store }) {
     if (!customer.name.trim() || !customer.phone.trim() || !customer.location.trim()) {
       return setError('Add your name, phone number, and delivery location to continue.');
     }
+    if (!store.ownerId) {
+      return setError('This shop has not finished setting up online orders yet. Please contact the shop owner.');
+    }
     setSubmitting(true);
     try {
       await createOrder({
@@ -51,7 +54,8 @@ function CartDrawer({ cart, onClose, onChange, store }) {
         phoneNumber: customer.phone,
         location: customer.location,
         items,
-        storeSlug: store.slug
+        storeSlug: store.slug,
+        ownerId: store.ownerId
       });
       setSubmitted(true);
     } catch (orderError) {
@@ -116,39 +120,71 @@ function CartDrawer({ cart, onClose, onChange, store }) {
 
 export default function StoreFront() {
   const { slug } = useParams();
-  const store = { ...defaultStore, slug: slug || defaultStore.slug };
+  const storeSlug = (slug || defaultStore.slug).toLowerCase();
+  const [store, setStore] = useState({ ...defaultStore, slug: storeSlug });
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState({});
   const [activeCategory, setActiveCategory] = useState('Everything');
   const [cartOpen, setCartOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [syncError, setSyncError] = useState('');
 
   useEffect(() => {
+    let active = true;
+    let unsubscribe = () => {};
     setLoading(true);
-    setSyncError('');
+    setError('');
+    setStore({ ...defaultStore, slug: storeSlug });
     setCart({});
     setActiveCategory('Everything');
-    return subscribeToProducts((items) => {
-      const availableProducts = items.filter((product) => product.available);
-      setProducts(availableProducts);
-      setCart((current) => Object.fromEntries(
-        Object.entries(current).flatMap(([id, entry]) => {
-          const latest = availableProducts.find((product) => product.id === id);
-          return latest?.stock
-            ? [[id, { product: latest, quantity: Math.min(entry.quantity, latest.stock) }]]
-            : [];
-        })
-      ));
-      setError('');
-      setSyncError('');
-      setLoading(false);
-    }, (requestError) => {
-      setError(requestError.message);
-      setLoading(false);
-    });
-  }, []);
+
+    async function loadStore() {
+      try {
+        const publicStore = await getPublicStore(storeSlug);
+        if (!active) return;
+        if (!publicStore && slug) {
+          setProducts([]);
+          setError('We couldn’t find a store with that link. Check the address and try again.');
+          setLoading(false);
+          return;
+        }
+
+        const currentStore = publicStore
+          ? { name: publicStore.name, slug: publicStore.storeSlug, ownerId: publicStore.ownerId }
+          : { ...defaultStore, slug: storeSlug, ownerId: '' };
+        setStore(currentStore);
+        unsubscribe = subscribeToProducts((items) => {
+          if (!active) return;
+          const availableProducts = items.filter((product) => product.available);
+          setProducts(availableProducts);
+          setCart((current) => Object.fromEntries(
+            Object.entries(current).flatMap(([id, entry]) => {
+              const latest = availableProducts.find((product) => product.id === id);
+              return latest?.stock
+                ? [[id, { product: latest, quantity: Math.min(entry.quantity, latest.stock) }]]
+                : [];
+            })
+          ));
+          setError('');
+          setLoading(false);
+        }, (requestError) => {
+          if (!active) return;
+          setError(requestError.message);
+          setLoading(false);
+        }, publicStore?.ownerId || '', storeSlug);
+      } catch (requestError) {
+        if (!active) return;
+        setError(requestError.message);
+        setLoading(false);
+      }
+    }
+
+    loadStore();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [storeSlug, slug]);
 
   const categories = useMemo(() => ['Everything', ...new Set(products.map((product) => product.category))], [products]);
   const visibleProducts = activeCategory === 'Everything' ? products : products.filter((product) => product.category === activeCategory);
@@ -208,7 +244,6 @@ export default function StoreFront() {
             </div>
             <span className="product-count">{loading ? 'Finding good things…' : `${visibleProducts.length.toString().padStart(2, '0')} LITTLE FINDS`}</span>
           </div>
-          {syncError && <p className="sync-error" role="status">{syncError}</p>}
           {error ? (
             <div className="state-card"><span className="state-icon"><X size={19} /></span><h3>We couldn't open the shop.</h3><p>{error}</p><button className="button button-outline" onClick={() => window.location.reload()}>Try again</button></div>
           ) : loading ? (

@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import ProtectdRoute from './components/ProtectdRoute.jsx';
-import { ensureFirebaseConfigured, getFirebaseAuth } from './firebase.js';
+import { getCurrentUser, signOutAccount } from './utils/storage.js';
 
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard.jsx'));
 const Login = lazy(() => import('./pages/Login.jsx'));
+const Register = lazy(() => import('./pages/Register.jsx'));
 const StoreFront = lazy(() => import('./pages/StoreFront.jsx'));
 
 export default function App() {
@@ -14,27 +14,33 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const navigate = useNavigate();
 
+  function handleLogin(currentUser) {
+    setUser(currentUser);
+    setAuthError('');
+  }
+
   useEffect(() => {
-    try {
-      ensureFirebaseConfigured();
-      return onAuthStateChanged(getFirebaseAuth(), (currentUser) => {
-        setUser(currentUser);
-        setCheckingAuth(false);
-        setAuthError('');
-      }, (error) => {
-        setAuthError(error.message);
-        setCheckingAuth(false);
-      });
-    } catch (error) {
+    let active = true;
+    getCurrentUser().then((currentUser) => {
+      if (!active) return;
+      setUser(currentUser);
+      setAuthError('');
+    }).catch((error) => {
+      if (!active) return;
       setAuthError(error.message);
-      setCheckingAuth(false);
-      return undefined;
-    }
+    }).finally(() => {
+      if (active) setCheckingAuth(false);
+    });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function handleSignOut() {
     try {
-      await signOut(getFirebaseAuth());
+      await signOutAccount();
+      setUser(null);
       navigate('/login', { replace: true });
     } catch (error) {
       setAuthError(error.message);
@@ -51,11 +57,15 @@ export default function App() {
         <Route path="/store/:slug" element={<StoreFront />} />
         <Route path="/login" element={checkingAuth
           ? loading
-          : user ? <Navigate to="/admin" replace /> : <Login onLogin={setUser} authError={authError} />
+          : user ? <Navigate to="/admin" replace /> : <Login onLogin={handleLogin} authError={authError} />
+        } />
+        <Route path="/register" element={checkingAuth
+          ? loading
+          : user ? <Navigate to="/admin" replace /> : <Register onLogin={handleLogin} />
         } />
         <Route path="/admin" element={checkingAuth
           ? loading
-          : <ProtectdRoute authenticated={Boolean(user)}><AdminDashboard onSignOut={handleSignOut} authError={authError} /></ProtectdRoute>
+          : <ProtectdRoute authenticated={Boolean(user)}><AdminDashboard user={user} onSignOut={handleSignOut} authError={authError} /></ProtectdRoute>
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
